@@ -1,0 +1,194 @@
+import time
+import speech_recognition as sr
+import requests
+import os
+import tkinter as tk
+from tkinter import ttk, messagebox
+import threading
+import openai
+import google.generativeai as genai
+
+class AudioCaptureApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Assistente por Voz com DeepSeek")
+        
+        # Variáveis de controle
+        self.is_listening = False
+        self.audio_buffer = []  # Armazena os trechos de áudio transcritos
+        self.api_key = "sk-1d501471ec87494298549d2cccbc4cab"  # Substitua pela sua chave de API
+        
+        # Configuração da interface
+        self.setup_ui()
+        
+        # Inicializa o reconhecedor de voz
+        self.recognizer = sr.Recognizer()
+        self.microphone = sr.Microphone()
+        
+    def setup_ui(self):
+        # Frame principal
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Botão de start/stop
+        self.btn_listen = ttk.Button(main_frame, text="Iniciar Escuta", command=self.toggle_listening)
+        self.btn_listen.pack(pady=10)
+        
+        # Status
+        self.status_label = ttk.Label(main_frame, text="Status: Pronto")
+        self.status_label.pack(pady=5)
+        
+        # Área de texto para transcrição
+        ttk.Label(main_frame, text="Transcrição:").pack()
+        self.transcription_text = tk.Text(main_frame, height=5, width=50)
+        self.transcription_text.pack(pady=5)
+        
+        # Área de texto para resposta
+        ttk.Label(main_frame, text="Resposta:").pack()
+        self.response_text = tk.Text(main_frame, height=5, width=50)
+        self.response_text.pack(pady=5)
+        
+        # Tempo de resposta
+        self.time_label = ttk.Label(main_frame, text="Tempo de resposta: -")
+        self.time_label.pack(pady=5)
+        
+    def toggle_listening(self):
+        if not self.is_listening:
+            self.start_listening()
+        else:
+            self.stop_listening()
+    
+    def start_listening(self):
+        self.is_listening = True
+        self.audio_buffer = []  # Limpa o buffer ao iniciar
+        self.btn_listen.config(text="Parar Escuta")
+        self.status_label.config(text="Status: Escutando...")
+        
+        # Inicia a captura em uma thread separada
+        threading.Thread(target=self.capture_audio_loop, daemon=True).start()
+    
+    def stop_listening(self):
+        self.is_listening = False
+        self.btn_listen.config(text="Iniciar Escuta")
+        self.status_label.config(text="Status: Processando...")
+        
+        # Junta todas as transcrições e envia para a IA
+        full_transcription = " ".join(self.audio_buffer)
+        self.update_transcription(full_transcription)
+        
+        if full_transcription:  # Só envia se houver texto
+            inicio = time.time()
+            resposta = self.perguntar_ao_deepseek(self.api_key, full_transcription)
+            tempo = time.time() - inicio
+            
+            self.update_response(resposta, tempo)
+            self.status_label.config(text="Status: Pronto")
+        else:
+            self.status_label.config(text="Status: Nenhum áudio capturado")
+    
+    def capture_audio_loop(self):
+        """Captura áudio continuamente enquanto is_listening for True"""
+        with self.microphone as source:
+            self.recognizer.adjust_for_ambient_noise(source)
+            
+            while self.is_listening:
+                try:
+                    # Grava áudio com timeout de 5 segundos
+                    audio = self.recognizer.listen(source, timeout=3, phrase_time_limit=5)
+                    
+                    # Salva o áudio temporariamente
+                    audio_file = "temp_audio.wav"
+                    with open(audio_file, "wb") as f:
+                        f.write(audio.get_wav_data())
+                    
+                    # Transcreve e armazena no buffer
+                    transcription = self.transcribe_audio(audio_file)
+                    if transcription and not transcription.startswith("Erro"):
+                        self.audio_buffer.append(transcription)
+                        self.root.after(0, self.update_transcription, " ".join(self.audio_buffer))
+                    
+                except sr.WaitTimeoutError:
+                    continue  # Ignora timeouts e continua escutando
+                except Exception as e:
+                    self.root.after(0, self.update_transcription, f"Erro: {str(e)}")
+                    break
+    
+    def transcribe_audio(self, filename):
+        """Transcreve o áudio usando a biblioteca SpeechRecognition."""
+        try:
+            with sr.AudioFile(filename) as source:
+                audio = self.recognizer.record(source)
+                text = self.recognizer.recognize_google(audio, language="pt-BR")
+                return text
+        except Exception as e:
+            return f"Erro ao transcrever áudio: {e}"
+    
+    def perguntar_ao_deepseek(self, api_key, transcription):
+        """Envia a transcrição para a API do DeepSeek e retorna a resposta."""
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            'messages': [
+                {'role': 'system', 'content': 'Você é um assistente útil.'},
+                {'role': 'user', 'content': transcription}
+            ],
+            'model': 'deepseek-chat',
+            'max_tokens': 150
+        }
+        try:
+            resposta = requests.post('https://api.deepseek.com/v1/chat/completions', 
+                                   headers=headers, json=data)
+            
+            if resposta.status_code == 200:
+                resposta_json = resposta.json()
+                return resposta_json['choices'][0]['message']['content'].strip()
+            else:
+                return f"Erro na requisição: {resposta.status_code} - {resposta.text}"
+        except Exception as e:
+            return f"Erro ao conectar à API: {str(e)}"
+        
+    def chat_with_openai(api_key: str, transcription: str, model: str = "gpt-3.5-turbo"):
+        """Envia o texto transcrito para a API da OpenAI (ChatGPT) e retorna uma resposta."""
+        try:
+            client = openai.OpenAI(api_key=api_key)  # Cria o cliente OpenAI
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "Você é um assistente útil."},
+                    {"role": "user", "content": transcription},
+                ]
+            )
+            return response.choices[0].message.content  # Acessa o conteúdo da resposta
+        except Exception as e:
+            return f"Erro ao conectar à API da OpenAI: {e}"
+        
+    def connect_to_gemini(api_key: str, text: str, model: str = "gemini-1.5-flash"):
+        """Envia o texto transcrito para a API do Gemini e retorna uma resposta."""
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(model)
+            response = model.generate_content(text)
+            return response.text
+        except Exception as e:
+            return f"Erro ao conectar à API do Gemini: {e}" 
+        
+        
+    def update_transcription(self, text):
+        """Atualiza a área de texto com a transcrição."""
+        self.transcription_text.delete(1.0, tk.END)
+        self.transcription_text.insert(tk.END, text)
+    
+    def update_response(self, response, time_elapsed):
+        """Atualiza a área de texto com a resposta e o tempo."""
+        self.response_text.delete(1.0, tk.END)
+        self.response_text.insert(tk.END, response)
+        self.time_label.config(text=f"Tempo de resposta: {time_elapsed:.2f} segundos")
+
+        
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = AudioCaptureApp(root)
+    root.mainloop()
