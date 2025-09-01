@@ -32,8 +32,8 @@ Crie um arquivo .env na raiz do projeto.
 
 Adicione sua chave da OpenAI:
 OPENAI_API_KEY=sk-sua_chave_aqui
-
-
+Adicione sua chave da Gemini:
+GEMINI_API_KEY = <chave_Gemini>
 ▶️ Uso
 
 Execute o script principal:
